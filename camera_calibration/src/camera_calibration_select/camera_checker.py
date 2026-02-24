@@ -42,8 +42,9 @@ from rclpy.node import Node
 import sensor_msgs.msg
 import sensor_msgs.srv
 import threading
+from time import sleep
 
-from camera_calibration_select.calibrator import MonoCalibrator, StereoCalibrator, ChessboardInfo
+from camera_calibration_select.calibrator import MonoCalibrator, StereoCalibrator, ChessboardInfo, MonoDrawable, StereoDrawable
 from message_filters import ApproximateTimeSynchronizer
 
 try:
@@ -55,13 +56,29 @@ except ImportError:
 def mean(seq):
     return sum(seq) / len(seq)
 
+
 def lmin(seq1, seq2):
     """ Pairwise minimum of two sequences """
     return [min(a, b) for (a, b) in zip(seq1, seq2)]
 
+
 def lmax(seq1, seq2):
     """ Pairwise maximum of two sequences """
     return [max(a, b) for (a, b) in zip(seq1, seq2)]
+
+
+class SpinThread(threading.Thread):
+    """
+    Thread that spins the ros node, while imshow runs in the main thread
+    """
+
+    def __init__(self, node):
+        threading.Thread.__init__(self)
+        self.node = node
+
+    def run(self):
+        rclpy.spin(self.node)
+
 
 class ConsumerThread(threading.Thread):
     def __init__(self, queue, function):
@@ -72,18 +89,46 @@ class ConsumerThread(threading.Thread):
     def run(self):
         while rclpy.ok():
             m = self.queue.get()
-            if self.queue.empty():
-                break
-        self.function(m)
+            # if self.queue.empty():
+            #     continue
+            self.function(m)
+
+
+class BufferQueue(Queue):
+    """Slight modification of the standard Queue that discards the oldest item
+    when adding an item and the queue is full.
+    """
+
+    def put(self, item, *args, **kwargs):
+        # The base implementation, for reference:
+        # https://github.com/python/cpython/blob/2.7/Lib/Queue.py#L107
+        # https://github.com/python/cpython/blob/3.8/Lib/queue.py#L121
+        with self.mutex:
+            if self.maxsize > 0 and self._qsize() == self.maxsize:
+                self._get()
+            self._put(item)
+            self.unfinished_tasks += 1
+            self.not_empty.notify()
+
 
 class CameraCheckerNode(Node):
+    FONT_FACE = cv2.FONT_HERSHEY_SIMPLEX
+    FONT_SCALE = 0.6
+    FONT_THICKNESS = 2
 
-    def __init__(self, name, chess_size, dim, approximate=0):
+    def __init__(self, name, chess_size, dim, approximate=0, queue_size=1, error_output_file="camera"):
         super().__init__(name)
         self.board = ChessboardInfo()
         self.board.n_cols = chess_size[0]
         self.board.n_rows = chess_size[1]
         self.board.dim = dim
+        self.linearity_rms_errors: list[float] = []
+        self.reproj_rms_errors: list[float] = []
+        self._last_display = None
+        self.current_image_height = 0
+        self.current_image_width = 0
+        self.enough_data = False
+        self.error_output_filename = error_output_file
 
         # make sure n_cols is not smaller than n_rows, otherwise error computation will be off
         if self.board.n_cols < self.board.n_rows:
@@ -100,9 +145,11 @@ class CameraCheckerNode(Node):
         if approximate <= 0:
             sync = message_filters.TimeSynchronizer
         else:
-            sync = functools.partial(ApproximateTimeSynchronizer, slop=approximate)
+            sync = functools.partial(
+                ApproximateTimeSynchronizer, slop=approximate)
 
-        tsm = sync([message_filters.Subscriber(self, type, topic) for (topic, type) in tosync_mono], 10)
+        tsm = sync([message_filters.Subscriber(self, type, topic)
+                   for (topic, type) in tosync_mono], 10)
         tsm.registerCallback(self.queue_monocular)
 
         left_topic = "stereo/left/image_rect"
@@ -117,24 +164,42 @@ class CameraCheckerNode(Node):
             (right_camera_topic, sensor_msgs.msg.CameraInfo)
         ]
 
-        tss = sync([message_filters.Subscriber(self, type, topic) for (topic, type) in tosync_stereo], 10)
+        tss = sync([message_filters.Subscriber(self, type, topic)
+                   for (topic, type) in tosync_stereo], 10)
         tss.registerCallback(self.queue_stereo)
 
         self.br = cv_bridge.CvBridge()
 
-        self.q_mono = Queue()
-        self.q_stereo = Queue()
+        self.q_mono = BufferQueue(queue_size)
+        self.q_stereo = BufferQueue(queue_size)
 
         mth = ConsumerThread(self.q_mono, self.handle_monocular)
-        mth.setDaemon(True)
+        mth.daemon = True
         mth.start()
 
         sth = ConsumerThread(self.q_stereo, self.handle_stereo)
-        sth.setDaemon(True)
+        sth.daemon = True
         sth.start()
+
+        self._queue_display = BufferQueue(maxsize=1)
+        self.initWindow()
 
         self.mc = MonoCalibrator([self.board])
         self.sc = StereoCalibrator([self.board])
+
+    def spin(self):
+        rclpy_spin_thread = SpinThread(self)
+        rclpy_spin_thread.start()
+
+        while rclpy.ok():
+            if self._queue_display.qsize() > 0:
+                self.image = self._queue_display.get()
+                cv2.imshow("display", self.image)
+            else:
+                sleep(0.1)
+            k = cv2.waitKey(6) & 0xFF
+            if k in [27, ord('q')]:
+                return
 
     def queue_monocular(self, msg, cmsg):
         self.q_mono.put((msg, cmsg))
@@ -156,32 +221,114 @@ class CameraCheckerNode(Node):
 
         (image, camera) = msg
         gray = self.mkgray(image)
-        C, ids = self.image_corners(gray)
-        if C is not None:
-            linearity_rms = self.mc.linear_error(C, ids, self.board)
+        # not using downsample_and_detect because it gives unaccurate reprojections
+        #scrib_mono, resized_corners, downsampled_corners, ids, board, (
+        #     x_scale, y_scale) = self.mc.downsample_and_detect(gray)
+        resized_corners, ids = self.image_corners(gray)
+        self.current_image_width = gray.shape[1]
+        self.current_image_height = gray.shape[0]
+        current_timestamp = image.header.stamp
+        if resized_corners is not None:
+            # Comuptes the RMS error between a detected point on a row and the line defined by the leftmost and the rightmost detected points on the same row and  averages the RMS error across all rows.  This is a measure of how well the detected corners fit a chessboard pattern.
+            linearity_rms = self.mc.linear_error(resized_corners, ids, self.board)
 
             # Add in reprojection check
-            image_points = C
-            object_points = self.mc.mk_object_points([self.board], use_board_size=True)[0]
+            image_points = resized_corners
+            object_points = self.mc.mk_object_points(
+                [self.board], use_board_size=True)[0]
             dist_coeffs = numpy.zeros((4, 1))
-            camera_matrix = numpy.array( [ [ camera.p[0], camera.p[1], camera.p[2]  ],
-                                           [ camera.p[4], camera.p[5], camera.p[6]  ],
-                                           [ camera.p[8], camera.p[9], camera.p[10] ] ] )
-            ok, rot, trans = cv2.solvePnP(object_points, image_points, camera_matrix, dist_coeffs)
+            camera_matrix = numpy.array([[camera.p[0], camera.p[1], camera.p[2]],
+                                         [camera.p[4], camera.p[5], camera.p[6]],
+                                         [camera.p[8], camera.p[9], camera.p[10]]])
+            ok, rot, trans = cv2.solvePnP(
+                object_points, image_points, camera_matrix, dist_coeffs)
             # Convert rotation into a 3x3 Rotation Matrix
             rot3x3, _ = cv2.Rodrigues(rot)
             # Reproject model points into image
-            object_points_world = numpy.asmatrix(rot3x3) * numpy.asmatrix(object_points.squeeze().T) + numpy.asmatrix(trans)
+            object_points_world = numpy.asmatrix(
+                rot3x3) * numpy.asmatrix(object_points.squeeze().T) + numpy.asmatrix(trans)
             reprojected_h = camera_matrix * object_points_world
-            reprojected   = (reprojected_h[0:2, :] / reprojected_h[2, :])
+            reprojected = (reprojected_h[0:2, :] / reprojected_h[2, :])
             reprojection_errors = image_points.squeeze().T - reprojected
 
-            reprojection_rms = numpy.sqrt(numpy.sum(numpy.array(reprojection_errors) ** 2) / numpy.product(reprojection_errors.shape))
+            reprojection_rms = numpy.sqrt(numpy.sum(numpy.array(
+                reprojection_errors) ** 2) / numpy.product(reprojection_errors.shape))
 
             # Print the results
-            print("Linearity RMS Error: %.3f Pixels      Reprojection RMS Error: %.3f Pixels" % (linearity_rms, reprojection_rms))
+            print("Linearity RMS Error: %.3f Pixels      Reprojection RMS Error: %.3f Pixels" % (
+                linearity_rms, reprojection_rms))
+
+            if linearity_rms is not None and reprojection_rms is not None and current_timestamp not in [t[0] for t in self.linearity_rms_errors]:
+                self.linearity_rms_errors.append(
+                    (current_timestamp, linearity_rms))
+                self.reproj_rms_errors.append(
+                    (current_timestamp, reprojection_rms))
+
+            if len(self.linearity_rms_errors) >= 20:
+                self.enough_data = True
         else:
-            print('no chessboard')
+            print(f'{current_timestamp} : no chessboard')
+            linearity_rms = None
+            reprojection_rms = None
+
+        scrib = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+
+        drawable = MonoDrawable()
+        # draw chessboard on image for display
+        if resized_corners is not None:
+            cv2.drawChessboardCorners(
+                scrib, (self.board.n_cols, self.board.n_rows), resized_corners, True)
+        drawable.scrib = scrib
+        drawable.linear_error = linearity_rms
+        drawable.reproj_error = reprojection_rms
+
+        self.redraw_monocular(drawable)
+
+    @classmethod
+    def putText(cls, img, text, org, color=(0, 0, 0)):
+        cv2.putText(img, text, org, cls.FONT_FACE, cls.FONT_SCALE,
+                    color, thickness=cls.FONT_THICKNESS)
+
+    @classmethod
+    def getTextSize(cls, text):
+        return cv2.getTextSize(text, cls.FONT_FACE, cls.FONT_SCALE, cls.FONT_THICKNESS)[0]
+
+    def text_height(self, start_height, i):
+        return start_height + 40 + i * 30
+
+    def redraw_monocular(self, drawable):
+        height = drawable.scrib.shape[0]
+        width = drawable.scrib.shape[1]
+        display = numpy.zeros(
+            (height, width + 100, 3), dtype=numpy.uint8)
+        image_top_edge = (display.shape[0] - height) // 2
+
+        display[image_top_edge:image_top_edge +
+                height, 0:width, :] = drawable.scrib
+        display[:, width:width+100, :].fill(255)
+        self.buttons(display)
+
+        self.putText(display, "lin.err",
+                     (width, self.text_height(image_top_edge, 0)))
+        linerror = drawable.linear_error
+        if linerror is None or linerror < 0:
+            msg = "?"
+        else:
+            msg = "%.4f" % linerror
+        self.putText(
+            display, msg, (width, self.text_height(image_top_edge, 1)))
+        self.putText(display, "reproj.err",
+                     (width, self.text_height(image_top_edge, 2)))
+        reprojerror = drawable.reproj_error
+        if reprojerror is None or reprojerror < 0:
+            msg = "?"
+        else:
+            msg = "%.4f" % reprojerror
+        self.putText(
+            display, msg, (width, self.text_height(image_top_edge, 3)))
+
+        self._last_display = display
+        self._queue_display.put(display)
 
     def handle_stereo(self, msg):
 
@@ -194,8 +341,64 @@ class CameraCheckerNode(Node):
         if L is not None and R is not None:
             epipolar = self.sc.epipolar_error(L, R)
 
-            dimension = self.sc.chessboard_size(L, R, self.board, msg=(lcmsg, rcmsg))
+            dimension = self.sc.chessboard_size(
+                L, R, self.board, msg=(lcmsg, rcmsg))
 
-            print("epipolar error: %f pixels   dimension: %f m" % (epipolar, dimension))
+            print("epipolar error: %f pixels   dimension: %f m" %
+                  (epipolar, dimension))
         else:
             print("no chessboard")
+
+    def initWindow(self):
+        print("Initializing display window...")
+        cv2.namedWindow("display", cv2.WINDOW_NORMAL)
+        cv2.setMouseCallback('display', self.on_mouse_movement)
+
+    main_button_height = 100
+    main_button_width = 100
+    save_start = 200
+
+    def on_mouse_movement(self, event, x, y, flags, param):
+        if event == cv2.EVENT_LBUTTONDOWN and self.current_image_width < x:
+            if self.save_start <= y <= self.save_start + self.main_button_height and self.enough_data:
+                self.save_errors()
+                self.buttons(self._last_display)
+                self._queue_display.put(self._last_display)
+            if self._last_display is not None:
+                print("Pixel value at click:", self._last_display[y, x])
+
+    def save_errors(self):
+        if not self.linearity_rms_errors or not self.reproj_rms_errors:
+            print("No error data to save.")
+            return
+
+        # Save linearity RMS errors
+        with open(f"{self.error_output_filename}_linear_rms_errors.txt", "w") as f:
+            for timestamp, error in self.linearity_rms_errors:
+                f.write(f"{timestamp.sec}.{timestamp.nanosec}, {error}\n")
+
+        # Save reprojection RMS errors
+        with open(f"{self.error_output_filename}_reprojection_rms_errors.txt", "w") as f:
+            for timestamp, error in self.reproj_rms_errors:
+                f.write(f"{timestamp.sec}.{timestamp.nanosec}, {error}\n")
+
+        print(f"Errors saved to {self.error_output_filename}_linear_rms_errors.txt and {self.error_output_filename}_reprojection_rms_errors.txt")
+
+    def button(self, dst, label, enable):
+        dst.fill(255)
+        size = (dst.shape[1], dst.shape[0])
+        if enable:
+            color = (155, 155, 80)
+        else:
+            color = (224, 224, 224)
+        cv2.circle(dst, (size[0] // 2, size[1] // 2),
+                   min(size) // 2, color, -1)
+        (w, h) = self.getTextSize(label)
+        self.putText(
+            dst, label, ((size[0] - w) // 2, (size[1] + h) // 2), (255, 255, 255))
+
+    def buttons(self, display):
+        x = self.current_image_width
+        # Add Save button
+        self.button(display[self.save_start:self.save_start+self.main_button_height,
+                    x:x+self.main_button_width], "Save", self.enough_data)

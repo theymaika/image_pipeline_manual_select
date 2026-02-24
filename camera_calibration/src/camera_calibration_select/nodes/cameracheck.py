@@ -44,15 +44,21 @@ def main():
     parser.add_option("--approximate",
                       type="float", default=0.0,
                       help="allow specified slop (in seconds) when pairing images from unsynchronized stereo cameras")
+    parser.add_option("--queue_size", type="int", default=1, help="size of the queue for synchronizing images")
+    parser.add_option("-o", "--error_output_filename", default="", help="output file name for reprojection error data")
 
     options, _ = parser.parse_args(rclpy.utilities.remove_ros_args())
-    rclpy.init()
 
     size = tuple([int(c) for c in options.size.split('x')])
     dim = float(options.square)
     approximate = float(options.approximate)
-    node = CameraCheckerNode("cameracheck", size, dim, approximate)
-    rclpy.spin(node)
+    queue_size = int(options.queue_size)
+    error_output_file = options.error_output_filename
+    
+    rclpy.init()
+    node = CameraCheckerNode("cameracheck", size, dim, approximate, queue_size, error_output_file)
+    node.spin()
+    rclpy.shutdown()
 
 if __name__ == "__main__":
     main()
