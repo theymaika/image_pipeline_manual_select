@@ -724,6 +724,7 @@ class MonoDrawable(ImageDrawable):
         ImageDrawable.__init__(self)
         self.scrib = None
         self.linear_error = -1.0
+        self.reproj_error = -1.0
 
 class StereoDrawable(ImageDrawable):
     def __init__(self):
@@ -732,6 +733,8 @@ class StereoDrawable(ImageDrawable):
         self.rscrib = None
         self.epierror = -1
         self.dim = -1
+        self.lreproj_error = -1.0
+        self.rreproj_error = -1.0
 
 
 class MonoCalibrator(Calibrator):
