@@ -144,7 +144,7 @@ class CalibrationNode(Node):
         self.c = None
 
         self._last_display = None
-        
+
         if save_filename != None and not save_filename.endswith(".tar.gz"):
             raise ValueError("Save filename must end with .tar.gz")
         self.save_filename = save_filename
@@ -475,8 +475,9 @@ class OpenCVCalibrationNode(CalibrationNode):
             return [max(a, b) for (a, b) in zip(seq1, seq2)]
 
         if current_db is None or len(current_db) == 0:
-            raise ValueError("Cannot compute goodenough without any samples in the database")
-        
+            raise ValueError(
+                "Cannot compute goodenough without any samples in the database")
+
         # Find range of checkerboard poses covered by samples in database
         all_params = [sample[0] for sample in current_db]
         min_params = all_params[0]
@@ -550,40 +551,39 @@ class OpenCVCalibrationNode(CalibrationNode):
                     state['current_idx'] += 1
                     continue
 
-                # Create display image with corners drawn
-                if len(img.shape) == 2:
-                    display_img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-                else:
-                    display_img = img.copy()
-
-                h, w = display_img.shape[:2]
+                # Create window 
+                img_height, img_width = img.shape[:2]
+                button_background_height = 70
+                window_display = numpy.zeros(
+                    (img_height+button_background_height, img_width, 3), dtype=numpy.uint8)
 
                 # Add button area background
-                cv2.rectangle(display_img, (0, 0), (w, 70), (50, 50, 50), -1)
+                cv2.rectangle(window_display, (0, 0),
+                              (img_width, button_background_height), (50, 50, 50), -1)
 
                 # Draw buttons
                 # ACCEPT button (green)
-                cv2.rectangle(display_img, (accept_x, button_y),
+                cv2.rectangle(window_display, (accept_x, button_y),
                               (accept_x + button_width, button_y + button_height), (0, 200, 0), -1)
-                cv2.rectangle(display_img, (accept_x, button_y),
+                cv2.rectangle(window_display, (accept_x, button_y),
                               (accept_x + button_width, button_y + button_height), (0, 255, 0), 2)
-                cv2.putText(display_img, "ACCEPT", (accept_x + 15, button_y + 35),
+                cv2.putText(window_display, "ACCEPT", (accept_x + 15, button_y + 35),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
                 # IGNORE button (red)
-                cv2.rectangle(display_img, (ignore_x, button_y),
+                cv2.rectangle(window_display, (ignore_x, button_y),
                               (ignore_x + button_width, button_y + button_height), (0, 0, 200), -1)
-                cv2.rectangle(display_img, (ignore_x, button_y),
+                cv2.rectangle(window_display, (ignore_x, button_y),
                               (ignore_x + button_width, button_y + button_height), (0, 0, 255), 2)
-                cv2.putText(display_img, "IGNORE", (ignore_x + 12, button_y + 35),
+                cv2.putText(window_display, "IGNORE", (ignore_x + 12, button_y + 35),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
                 # FINISH button (blue)
-                cv2.rectangle(display_img, (finish_x, button_y),
+                cv2.rectangle(window_display, (finish_x, button_y),
                               (finish_x + button_width, button_y + button_height), (200, 0, 0), -1)
-                cv2.rectangle(display_img, (finish_x, button_y),
+                cv2.rectangle(window_display, (finish_x, button_y),
                               (finish_x + button_width, button_y + button_height), (255, 0, 0), 2)
-                cv2.putText(display_img, "FINISH", (finish_x + 15, button_y + 35),
+                cv2.putText(window_display, "FINISH", (finish_x + 15, button_y + 35),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
                 # parameter visualization
@@ -595,12 +595,12 @@ class OpenCVCalibrationNode(CalibrationNode):
 
                 for i, (label, lo, hi, progress) in enumerate(params):
                     (text_width, _) = self.getTextSize(label)
-                    self.putText(display_img, label,
+                    self.putText(window_display, label,
                                  (finish_x + button_width + param_separation_y * (i+1) + 100 * i + (100 - text_width) // 2, button_y + button_height // 2 - 10))
                     color = (0, 255, 0)
                     if progress < 1.0:
                         color = (0, int(progress*255.), 255)
-                    cv2.line(display_img,
+                    cv2.line(window_display,
                              (int(finish_x + button_width + (i+1) * param_separation_y + 100 * i + lo * 100),
                               button_y + button_height // 2 + 10),
                              (int(finish_x + button_width + (i+1) * param_separation_y + 100 * i + hi * 100),
@@ -608,7 +608,11 @@ class OpenCVCalibrationNode(CalibrationNode):
                              color, 4)
 
                 # Draw corners on image (below button area)
-                display_with_corners = display_img.copy()
+                if len(img.shape) == 2:
+                    display_with_corners = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+                else:
+                    display_with_corners = img.copy()
+                    
                 if board.pattern == "charuco" and ids is not None:
                     cv2.aruco.drawDetectedCornersCharuco(
                         display_with_corners, corners, ids)
@@ -616,12 +620,14 @@ class OpenCVCalibrationNode(CalibrationNode):
                     cv2.drawChessboardCorners(display_with_corners, (board.n_cols, board.n_rows),
                                               corners, True)
 
+                window_display[button_background_height:button_background_height + img_height, 0:img_width, :] = display_with_corners
+                
                 # Add image counter text
                 counter_text = f"Image {state['current_idx'] + 1}/{len(self.c.good_corners)} - Accepted: {len(accepted_corners)}"
-                cv2.putText(display_with_corners, counter_text, (10, h - 10),
+                cv2.putText(window_display, counter_text, (10, img_height - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
-                cv2.imshow(window_name, display_with_corners)
+                cv2.imshow(window_name, window_display)
 
                 # Reset action and wait for user click
                 state['action'] = None
