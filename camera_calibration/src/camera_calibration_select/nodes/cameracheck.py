@@ -39,6 +39,7 @@ from camera_calibration_select.camera_checker import CameraCheckerNode
 def main():
     from optparse import OptionParser
     parser = OptionParser()
+    parser.add_option("-p", "--pattern", default="chessboard", help="specify calibration pattern type [default: %default]")
     parser.add_option("-s", "--size", default="8x6", help="specify chessboard size as nxm [default: %default]")
     parser.add_option("-q", "--square", default=".108", help="specify chessboard square size in meters [default: %default]")
     parser.add_option("--approximate",
@@ -54,9 +55,10 @@ def main():
     approximate = float(options.approximate)
     queue_size = int(options.queue_size)
     error_output_file = options.error_output_filename
+    pattern_type = options.pattern
     
     rclpy.init()
-    node = CameraCheckerNode("cameracheck", size, dim, approximate, queue_size, error_output_file)
+    node = CameraCheckerNode("cameracheck", size, dim, approximate, queue_size, error_output_file, pattern_type)
     node.spin()
     rclpy.shutdown()
 

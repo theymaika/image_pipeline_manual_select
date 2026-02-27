@@ -116,9 +116,13 @@ class CameraCheckerNode(Node):
     FONT_SCALE = 0.6
     FONT_THICKNESS = 2
 
-    def __init__(self, name, chess_size, dim, approximate=0, queue_size=1, error_output_file="camera"):
+    def __init__(self, name, chess_size, dim, approximate=0, queue_size=1, error_output_file="camera", pattern="chessboard"):
         super().__init__(name)
-        self.board = ChessboardInfo()
+        
+        if(pattern != "chessboard"):
+            raise NotImplementedError(f"Pattern type {pattern} not supported. Only 'chessboard' is currently supported.")
+        
+        self.board = ChessboardInfo(pattern)
         self.board.n_cols = chess_size[0]
         self.board.n_rows = chess_size[1]
         self.board.dim = dim
