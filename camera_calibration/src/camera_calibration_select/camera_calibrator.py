@@ -95,7 +95,7 @@ class ConsumerThread(threading.Thread):
 class CalibrationNode(Node):
     def __init__(self, name, boards, service_check=True, synchronizer=message_filters.TimeSynchronizer, flags=0,
                  fisheye_flags=0, pattern=Patterns.Chessboard, camera_name='', checkerboard_flags=0,
-                 max_chessboard_speed=-1, queue_size=1):
+                 max_chessboard_speed=-1, queue_size=1, save_filename="/tmp/calibrationdata.tar.gz"):
         super().__init__(name)
 
         self.set_camera_info_service = self.create_client(sensor_msgs.srv.SetCameraInfo,
@@ -144,6 +144,10 @@ class CalibrationNode(Node):
         self.c = None
 
         self._last_display = None
+        
+        if save_filename != None and not save_filename.endswith(".tar.gz"):
+            raise ValueError("Save filename must end with .tar.gz")
+        self.save_filename = save_filename
 
         mth = ConsumerThread(self.q_mono, self.handle_monocular)
         mth.daemon = True
@@ -318,7 +322,7 @@ class OpenCVCalibrationNode(CalibrationNode):
                     self.queue_display.put(self._last_display)
             if self.c.calibrated:
                 if 280 <= y < 380:
-                    self.c.do_save()
+                    self.c.do_save(self.save_filename)
                 elif 380 <= y < 480:
                     # Only shut down if we set camera info correctly, #3993
                     if self.do_upload():
@@ -681,7 +685,7 @@ class OpenCVCalibrationNode(CalibrationNode):
                     self.queue_display.put(self._last_display)
             if self.c.calibrated:
                 if save_start <= y < finish_start:
-                    self.c.do_save()
+                    self.c.do_save(self.save_filename)
                 elif finish_start <= y < finish_start + main_button_height:
                     # Only shut down if we set camera info correctly, #3993
                     if self.do_upload():

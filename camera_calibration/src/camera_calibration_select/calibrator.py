@@ -693,12 +693,11 @@ class Calibrator():
         ])
         return calmessage
 
-    def do_save(self):
-        filename = '/tmp/calibrationdata.tar.gz'
-        tf = tarfile.open(filename, 'w:gz')
+    def do_save(self, save_filename):
+        tf = tarfile.open(save_filename, 'w:gz')
         self.do_tarfile_save(tf) # Must be overridden in subclasses
         tf.close()
-        print(("Wrote calibration data to", filename))
+        print(("Wrote calibration data to", save_filename))
 
 def image_from_archive(archive, name):
     """

@@ -132,6 +132,7 @@ def main():
     group.add_option("--max-chessboard-speed", type="float", default=-1.0,
                      help="Do not use samples where the calibration pattern is moving faster \
                      than this speed in px/frame. Set to eg. 0.5 for rolling shutter cameras.")
+    group.add_option("-o", "--save-filename", default="/tmp/calibrationdata.tar.gz", help="filename to save calibration results to (default %default)")
 
     parser.add_option_group(group)
     options, _ = parser.parse_args(rclpy.utilities.remove_ros_args())
@@ -222,7 +223,7 @@ def main():
     node = OpenCVCalibrationNode("cameracalibrator", boards, options.service_check, sync,
                                  calib_flags, fisheye_calib_flags, pattern, options.camera_name,
                                  checkerboard_flags=checkerboard_flags, max_chessboard_speed=options.max_chessboard_speed,
-                                 queue_size=options.queue_size)
+                                 queue_size=options.queue_size, save_filename=options.save_filename)
     node.spin()
     rclpy.shutdown()
 
