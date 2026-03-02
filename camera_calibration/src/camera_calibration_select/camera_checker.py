@@ -44,7 +44,7 @@ import sensor_msgs.srv
 import threading
 from time import sleep
 
-from camera_calibration_select.calibrator import MonoCalibrator, StereoCalibrator, ChessboardInfo, MonoDrawable, StereoDrawable
+from camera_calibration_select.calibrator import MonoCalibrator, StereoCalibrator, ChessboardInfo, MonoDrawable, StereoDrawable, Patterns, CAMERA_MODEL
 from message_filters import ApproximateTimeSynchronizer
 
 try:
@@ -116,16 +116,19 @@ class CameraCheckerNode(Node):
     FONT_SCALE = 0.6
     FONT_THICKNESS = 2
 
-    def __init__(self, name, chess_size, dim, approximate=0, queue_size=1, error_output_file="camera", pattern="chessboard"):
+    def __init__(self, name, chess_size, dim, approximate=0, queue_size=1, error_output_file="camera", pattern="chessboard", camera_type='pinhole', charuco_marker_size=[], aruco_dict=[]):
         super().__init__(name)
-        
-        if(pattern != "chessboard"):
-            raise NotImplementedError(f"Pattern type {pattern} not supported. Only 'chessboard' is currently supported.")
-        
-        self.board = ChessboardInfo(pattern)
-        self.board.n_cols = chess_size[0]
-        self.board.n_rows = chess_size[1]
-        self.board.dim = dim
+
+        if pattern == 'charuco':
+            if not charuco_marker_size:
+                raise ValueError(
+                    "Charuco pattern requires --charuco_marker_size to be specified.")
+            if not aruco_dict:
+                raise ValueError(
+                    "Charuco pattern requires --aruco_dict to be specified.")
+        self.board = ChessboardInfo(pattern,  n_cols=chess_size[0], n_rows=chess_size[1], dim=dim, marker_size=float(
+            charuco_marker_size[0]), aruco_dict=aruco_dict[0])
+
         self.linearity_rms_errors: list[float] = []
         self.reproj_rms_errors: list[float] = []
         self._last_display = None
@@ -133,6 +136,24 @@ class CameraCheckerNode(Node):
         self.current_image_width = 0
         self.enough_data = False
         self.error_output_filename = error_output_file
+
+        if pattern == "chessboard":
+            pattern_type = Patterns.Chessboard
+        elif pattern == "charuco":
+            pattern_type = Patterns.ChArUco
+        elif pattern == "acircles":
+            pattern_type = Patterns.ACircles
+        elif pattern == "circles":
+            pattern_type = Patterns.Circles
+        else:
+            raise ValueError(f"Unsupported pattern type: {pattern}")
+
+        if camera_type == "pinhole":
+            self.camera_model = CAMERA_MODEL.PINHOLE
+        elif camera_type == "fisheye":
+            self.camera_model = CAMERA_MODEL.FISHEYE
+        else:
+            raise ValueError(f"Unsupported camera type: {camera_type}")
 
         # make sure n_cols is not smaller than n_rows, otherwise error computation will be off
         if self.board.n_cols < self.board.n_rows:
@@ -188,8 +209,8 @@ class CameraCheckerNode(Node):
         self._queue_display = BufferQueue(maxsize=1)
         self.initWindow()
 
-        self.mc = MonoCalibrator([self.board])
-        self.sc = StereoCalibrator([self.board])
+        self.mc = MonoCalibrator([self.board], pattern=pattern_type)
+        self.sc = StereoCalibrator([self.board], pattern=pattern_type)
 
     def spin(self):
         rclpy_spin_thread = SpinThread(self)
@@ -226,26 +247,40 @@ class CameraCheckerNode(Node):
         (image, camera) = msg
         gray = self.mkgray(image)
         # not using downsample_and_detect because it gives unaccurate reprojections
-        #scrib_mono, resized_corners, downsampled_corners, ids, board, (
+        # scrib_mono, resized_corners, downsampled_corners, ids, board, (
         #     x_scale, y_scale) = self.mc.downsample_and_detect(gray)
-        resized_corners, ids = self.image_corners(gray)
+        corners, ids = self.image_corners(gray)
         self.current_image_width = gray.shape[1]
         self.current_image_height = gray.shape[0]
         current_timestamp = image.header.stamp
-        if resized_corners is not None:
+        if corners is not None:
             # Comuptes the RMS error between a detected point on a row and the line defined by the leftmost and the rightmost detected points on the same row and  averages the RMS error across all rows.  This is a measure of how well the detected corners fit a chessboard pattern.
-            linearity_rms = self.mc.linear_error(resized_corners, ids, self.board)
+            linearity_rms = self.mc.linear_error(corners, ids, self.board)
 
             # Add in reprojection check
-            image_points = resized_corners
+            image_points = corners
             object_points = self.mc.mk_object_points(
                 [self.board], use_board_size=True)[0]
             dist_coeffs = numpy.zeros((4, 1))
             camera_matrix = numpy.array([[camera.p[0], camera.p[1], camera.p[2]],
                                          [camera.p[4], camera.p[5], camera.p[6]],
                                          [camera.p[8], camera.p[9], camera.p[10]]])
-            ok, rot, trans = cv2.solvePnP(
-                object_points, image_points, camera_matrix, dist_coeffs)
+            print("image points matrix size : {}, object points matrix size : {}, camera matrix size : {}".format(
+                image_points.shape, object_points.shape, camera_matrix.shape))
+            print("corner ids detected: {}".format(ids.flatten()))
+            if self.mc.pattern == Patterns.Chessboard:
+                ok, rot, trans = cv2.solvePnP(
+                    object_points, image_points, camera_matrix, dist_coeffs)
+            elif self.mc.pattern == Patterns.ChArUco:
+                rvec = numpy.array([[0.0],
+                                    [0.0],
+                                    [0.0]], dtype=numpy.float32)
+
+                tvec = numpy.array([[0.0],
+                                    [0.0],
+                                    [0.0]], dtype=numpy.float32)
+                ok, rot, trans = cv2.aruco.estimatePoseCharucoBoard(
+                    corners, ids, self.board.charuco_board, camera_matrix, dist_coeffs, rvec, tvec)
             # Convert rotation into a 3x3 Rotation Matrix
             rot3x3, _ = cv2.Rodrigues(rot)
             # Reproject model points into image
@@ -253,7 +288,16 @@ class CameraCheckerNode(Node):
                 rot3x3) * numpy.asmatrix(object_points.squeeze().T) + numpy.asmatrix(trans)
             reprojected_h = camera_matrix * object_points_world
             reprojected = (reprojected_h[0:2, :] / reprojected_h[2, :])
-            reprojection_errors = image_points.squeeze().T - reprojected
+            #filter out points in the reprojection that are not part of the detected corners
+            filtered_reprojected = [reprojected[:,i] for i in ids]
+            
+            if self.mc.pattern != Patterns.ChArUco:
+                reprojection_errors = image_points.squeeze().T - filtered_reprojected
+            else:
+                #charuco board are represented as columns x rows, so we need to swap x and y in the reprojection to compute the error correctly
+                swapped_reprojected = filtered_reprojected.copy()
+                swapped_reprojected[[0,1]] = filtered_reprojected[[1,0]]
+                reprojection_errors = image_points.squeeze().T - swapped_reprojected.T
 
             reprojection_rms = numpy.sqrt(numpy.sum(numpy.array(
                 reprojection_errors) ** 2) / numpy.product(reprojection_errors.shape))
@@ -279,9 +323,13 @@ class CameraCheckerNode(Node):
 
         drawable = MonoDrawable()
         # draw chessboard on image for display
-        if resized_corners is not None:
-            cv2.drawChessboardCorners(
-                scrib, (self.board.n_cols, self.board.n_rows), resized_corners, True)
+        if corners is not None:
+            if self.board.pattern == 'chessboard':
+                cv2.drawChessboardCorners(
+                    scrib, (self.board.n_cols, self.board.n_rows), corners, True)
+            elif self.board.pattern == 'charuco':
+                cv2.aruco.drawDetectedCornersCharuco(scrib, corners, ids)
+
         drawable.scrib = scrib
         drawable.linear_error = linearity_rms
         drawable.reproj_error = reprojection_rms
@@ -386,7 +434,8 @@ class CameraCheckerNode(Node):
             for timestamp, error in self.reproj_rms_errors:
                 f.write(f"{timestamp.sec}.{timestamp.nanosec}, {error}\n")
 
-        print(f"Errors saved to {self.error_output_filename}_linear_rms_errors.txt and {self.error_output_filename}_reprojection_rms_errors.txt")
+        print(
+            f"Errors saved to {self.error_output_filename}_linear_rms_errors.txt and {self.error_output_filename}_reprojection_rms_errors.txt")
 
     def button(self, dst, label, enable):
         dst.fill(255)

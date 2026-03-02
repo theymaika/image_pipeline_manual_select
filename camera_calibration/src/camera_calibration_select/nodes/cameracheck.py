@@ -47,6 +47,15 @@ def main():
                       help="allow specified slop (in seconds) when pairing images from unsynchronized stereo cameras")
     parser.add_option("--queue_size", type="int", default=1, help="size of the queue for synchronizing images")
     parser.add_option("-o", "--error_output_filename", default="", help="output file name for reprojection error data")
+    parser.add_option("-t", "--camera_type", default="pinhole", help="specify camera model type (pinhole, fisheye) [default: %default]")
+    #ChAruco options
+    parser.add_option("-m", "--charuco_marker_size",
+                     action="append", default=[],
+                     help="ArUco marker size (meters); only valid with `-p charuco`")
+    parser.add_option("-d", "--aruco_dict",
+                     action="append", default=[],
+                     help="ArUco marker dictionary; only valid with `-p charuco`; one of 'aruco_orig', '4x4_250', " +
+                     "'5x5_250', '6x6_250', '7x7_250'")
 
     options, _ = parser.parse_args(rclpy.utilities.remove_ros_args())
 
@@ -54,11 +63,9 @@ def main():
     dim = float(options.square)
     approximate = float(options.approximate)
     queue_size = int(options.queue_size)
-    error_output_file = options.error_output_filename
-    pattern_type = options.pattern
     
     rclpy.init()
-    node = CameraCheckerNode("cameracheck", size, dim, approximate, queue_size, error_output_file, pattern_type)
+    node = CameraCheckerNode("cameracheck", size, dim, approximate, queue_size, options.error_output_filename, options.pattern, options.camera_type, options.charuco_marker_size, options.aruco_dict)
     node.spin()
     rclpy.shutdown()
 
