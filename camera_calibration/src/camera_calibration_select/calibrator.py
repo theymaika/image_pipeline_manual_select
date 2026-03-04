@@ -97,10 +97,10 @@ class ChessboardInfo():
                 "7x7_250": cv2.aruco.DICT_7X7_250,
                 "7x7_1000": cv2.aruco.DICT_7X7_1000}[aruco_dict])
             if VersionInfo.parse(cv2.__version__) >= VersionInfo.parse('4.8.0'):
-                self.charuco_board = cv2.aruco.CharucoBoard((self.n_cols, self.n_rows), self.dim, self.marker_size,
+                self.charuco_board = cv2.aruco.CharucoBoard((self.n_rows, self.n_cols), self.dim, self.marker_size,
                                                             self.aruco_dict)
             else:
-                self.charuco_board = cv2.aruco.CharucoBoard_create(self.n_cols, self.n_rows, self.dim, self.marker_size,
+                self.charuco_board = cv2.aruco.CharucoBoard_create(self.n_rows, self.n_cols, self.dim, self.marker_size,
                                                                    self.aruco_dict)
 
 
@@ -369,7 +369,7 @@ class Calibrator():
             # Make sure n_cols > n_rows to agree with OpenCV CB detector output
             self._boards = [ChessboardInfo("chessboard", max(
                 i.n_cols, i.n_rows), min(i.n_cols, i.n_rows), i.dim) for i in boards]
-        if pattern == Patterns.ChArUco:
+        elif pattern == Patterns.ChArUco:
             self._boards = boards
         elif pattern == Patterns.ACircles:
             # 7x4 and 4x7 are actually different patterns. Assume square-ish pattern, so n_rows > n_cols.
@@ -534,27 +534,35 @@ class Calibrator():
     def mk_object_points(self, boards, use_board_size=False):
         opts = []
         for i, b in enumerate(boards):
-            num_pts = b.n_cols * b.n_rows
-            opts_loc = numpy.zeros((num_pts, 1, 3), numpy.float32)
-            for j in range(num_pts):
-                opts_loc[j, 0, 0] = (j // b.n_cols)
-                if self.pattern == Patterns.ACircles:
-                    opts_loc[j, 0, 1] = 2 * \
-                        (j % b.n_cols) + (opts_loc[j, 0, 0] % 2)
-                else:
-                    opts_loc[j, 0, 1] = (j % b.n_cols)
-                opts_loc[j, 0, 2] = 0
+            if self.pattern == Patterns.ChArUco:
+                # ChArUco boards have (n_rows-1) x (n_cols-1) inner corners
+                # Generated in column-major order to match cv::aruco::CharucoBoard
+                num_pts = (b.n_cols - 1) * (b.n_rows - 1)
+                opts_loc = numpy.zeros((num_pts, 1, 3), numpy.float32)
+                # Column-major ordering: iterate columns first, then rows
+                for col in range(b.n_cols - 1):
+                    for row in range(b.n_rows - 1):
+                        idx = col * (b.n_rows - 1) + row
+                        opts_loc[idx, 0, 0] = col
+                        opts_loc[idx, 0, 1] = row
+                        opts_loc[idx, 0, 2] = 0
                 if use_board_size:
-                    opts_loc[j, 0, :] = opts_loc[j, 0, :] * b.dim
+                    opts_loc[:, :, :] = opts_loc[:, :, :] * b.dim
+            else:
+                num_pts = b.n_cols * b.n_rows
+                opts_loc = numpy.zeros((num_pts, 1, 3), numpy.float32)
+                for j in range(num_pts):
+                    opts_loc[j, 0, 0] = (j // b.n_cols)
+                    if self.pattern == Patterns.ACircles:
+                        opts_loc[j, 0, 1] = 2 * \
+                            (j % b.n_cols) + (opts_loc[j, 0, 0] % 2)    
+                    else:
+                        opts_loc[j, 0, 1] = (j % b.n_cols)
+                    opts_loc[j, 0, 2] = 0
+                    if use_board_size:
+                        opts_loc[j, 0, :] = opts_loc[j, 0, :] * b.dim
             opts.append(opts_loc)
         return opts
-    
-    board_type_to_string ={
-         Patterns.Chessboard: "chessboard",
-         Patterns.ChArUco: "charuco",
-         Patterns.ACircles: "acircles",
-         Patterns.Circles: "circles"
-    }
 
     def get_corners(self, img, refine=True):
         """
@@ -570,8 +578,6 @@ class Calibrator():
         """
 
         for b in self._boards:
-            type_string = b.pattern
-            print(f"Board type : {type_string} ({self.board_type_to_string.get(self.pattern, 'unknown')}), size {b.n_cols}x{b.n_rows}")
             if self.pattern == Patterns.Chessboard:
                 (ok, corners) = _get_corners(
                     img, b, refine, self.checkerboard_flags)

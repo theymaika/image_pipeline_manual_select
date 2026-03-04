@@ -73,7 +73,7 @@ def main():
                      "  with each --size and --square argument")
     group.add_option("-s", "--size",
                      action="append", default=[],
-                     help="chessboard size as NxM, counting interior corners (e.g. a standard chessboard is 7x7)")
+                     help="chessboard size as NxM, counting interior corners (e.g. a standard chessboard is 7x7). For ChAruco boards, this is the total size of the board not the number of inner corners. Must be rows x columns.")
     group.add_option("-q", "--square",
                      action="append", default=[],
                      help="chessboard square size in meters")
@@ -148,7 +148,7 @@ def main():
     if options.pattern == "charuco" and optionsValidCharuco(options, parser):
         for (sz, sq, ms, ad) in zip(options.size, options.square, options.charuco_marker_size, options.aruco_dict):
             size = tuple([int(c) for c in sz.split('x')])
-            boards.append(ChessboardInfo('charuco', size[0], size[1], float(sq), float(ms), ad))
+            boards.append(ChessboardInfo('charuco', size[1], size[0], float(sq), float(ms), ad)) # normally, the dimensions should be (rows, cols)
     else:
         for (sz, sq) in zip(options.size, options.square):
             size = tuple([int(c) for c in sz.split('x')])

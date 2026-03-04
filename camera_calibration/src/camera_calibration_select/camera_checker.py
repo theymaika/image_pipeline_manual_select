@@ -126,8 +126,19 @@ class CameraCheckerNode(Node):
             if not aruco_dict:
                 raise ValueError(
                     "Charuco pattern requires --aruco_dict to be specified.")
-        self.board = ChessboardInfo(pattern,  n_cols=chess_size[0], n_rows=chess_size[1], dim=dim, marker_size=float(
-            charuco_marker_size[0]), aruco_dict=aruco_dict[0])
+            self.board = ChessboardInfo(pattern,  n_cols=chess_size[1], n_rows=chess_size[0], dim=dim, marker_size=float(
+                charuco_marker_size[0]), aruco_dict=aruco_dict[0])
+        elif pattern == 'chessboard':
+            self.board = ChessboardInfo(pattern,  n_cols=max(
+                chess_size), n_rows=min(chess_size), dim=dim)
+        elif pattern == 'acircles':
+            self.board = ChessboardInfo(pattern, n_cols=min(
+                chess_size), n_rows=max(chess_size), dim=dim)
+        elif pattern == 'circles':
+            self.board = ChessboardInfo(
+                pattern, n_cols=chess_size[1], n_rows=chess_size[0], dim=dim)
+        else:
+            raise ValueError(f"Unsupported pattern type: {pattern}")
 
         self.linearity_rms_errors: list[float] = []
         self.reproj_rms_errors: list[float] = []
@@ -253,88 +264,115 @@ class CameraCheckerNode(Node):
         self.current_image_width = gray.shape[1]
         self.current_image_height = gray.shape[0]
         current_timestamp = image.header.stamp
-        if corners is not None:
-            # Comuptes the RMS error between a detected point on a row and the line defined by the leftmost and the rightmost detected points on the same row and  averages the RMS error across all rows.  This is a measure of how well the detected corners fit a chessboard pattern.
-            linearity_rms = self.mc.linear_error(corners, ids, self.board)
+        reprojected_corners = []
+        try:
+            if corners is not None:
+                # Comuptes the RMS error between a detected point on a row and the line defined by the leftmost and the rightmost detected points on the same row and  averages the RMS error across all rows.  This is a measure of how well the detected corners fit a chessboard pattern.
+                linearity_rms = self.mc.linear_error(corners, ids, self.board)
 
-            # Add in reprojection check
-            image_points = corners
-            object_points = self.mc.mk_object_points(
-                [self.board], use_board_size=True)[0]
-            dist_coeffs = numpy.zeros((4, 1))
-            camera_matrix = numpy.array([[camera.p[0], camera.p[1], camera.p[2]],
-                                         [camera.p[4], camera.p[5], camera.p[6]],
-                                         [camera.p[8], camera.p[9], camera.p[10]]])
-            print("image points matrix size : {}, object points matrix size : {}, camera matrix size : {}".format(
-                image_points.shape, object_points.shape, camera_matrix.shape))
-            print("corner ids detected: {}".format(ids.flatten()))
-            if self.mc.pattern == Patterns.Chessboard:
-                ok, rot, trans = cv2.solvePnP(
-                    object_points, image_points, camera_matrix, dist_coeffs)
-            elif self.mc.pattern == Patterns.ChArUco:
-                rvec = numpy.array([[0.0],
-                                    [0.0],
-                                    [0.0]], dtype=numpy.float32)
+                # Add in reprojection check
+                image_points = corners
+                object_points = self.mc.mk_object_points(
+                    [self.board], use_board_size=True)[0]
+                dist_coeffs = numpy.zeros((4, 1))
+                camera_matrix = numpy.array([[camera.p[0], camera.p[1], camera.p[2]],
+                                            [camera.p[4], camera.p[5], camera.p[6]],
+                                            [camera.p[8], camera.p[9], camera.p[10]]])
+                if self.mc.pattern == Patterns.Chessboard:
+                    ok, rot, trans = cv2.solvePnP(
+                        object_points, image_points, camera_matrix, dist_coeffs)
+                elif self.mc.pattern == Patterns.ChArUco:
+                    rvec = numpy.array([[0.0],
+                                        [0.0],
+                                        [0.0]], dtype=numpy.float32)
 
-                tvec = numpy.array([[0.0],
-                                    [0.0],
-                                    [0.0]], dtype=numpy.float32)
-                ok, rot, trans = cv2.aruco.estimatePoseCharucoBoard(
-                    corners, ids, self.board.charuco_board, camera_matrix, dist_coeffs, rvec, tvec)
-            # Convert rotation into a 3x3 Rotation Matrix
-            rot3x3, _ = cv2.Rodrigues(rot)
-            # Reproject model points into image
-            object_points_world = numpy.asmatrix(
-                rot3x3) * numpy.asmatrix(object_points.squeeze().T) + numpy.asmatrix(trans)
-            reprojected_h = camera_matrix * object_points_world
-            reprojected = (reprojected_h[0:2, :] / reprojected_h[2, :])
-            #filter out points in the reprojection that are not part of the detected corners
-            filtered_reprojected = [reprojected[:,i] for i in ids]
-            
-            if self.mc.pattern != Patterns.ChArUco:
-                reprojection_errors = image_points.squeeze().T - filtered_reprojected
+                    tvec = numpy.array([[0.0],
+                                        [0.0],
+                                        [0.0]], dtype=numpy.float32)
+                    ok, rot, trans = cv2.aruco.estimatePoseCharucoBoard(
+                        image_points, ids, self.board.charuco_board, camera_matrix, dist_coeffs, rvec, tvec)
+                # Convert rotation into a 3x3 Rotation Matrix
+                rot3x3, _ = cv2.Rodrigues(rot)
+                # Reproject model points into image
+                object_points_world = numpy.asmatrix(
+                    rot3x3) * numpy.asmatrix(object_points.squeeze().T) + numpy.asmatrix(trans)
+                reprojected_h = camera_matrix * object_points_world
+                print("reprojected_h: {}".format(reprojected_h))
+                if(any([reprojected_h[2, i] == 0. for i in range(reprojected_h.shape[1])])):
+                    raise ZeroDivisionError("At least one point has a z value of 0 after projection, cannot divide by zero to get pixel coordinates.")
+                reprojected = (reprojected_h[0:2, :] / reprojected_h[2, :])
+                print("reprojected size: {}".format(reprojected.shape))
+                
+                # filter out points in the reprojection that are not part of the detected corners
+                squeezed_img_points = image_points.squeeze()
+
+                # Get reprojected points corresponding to detected IDs
+                filtered_reprojected = numpy.array([reprojected[:,i] for i in ids.flatten()])
+                
+                print("reprojected pts {}: {}".format(reprojected.shape, reprojected))
+                print("filtered_reprojected {}: {}".format(filtered_reprojected.shape, filtered_reprojected))
+                print("squeezed_img_points: {}".format(squeezed_img_points))
+                # Prepare corners for drawing (N, 1, 2) format
+                reprojected_corners = numpy.asarray(reprojected).T.reshape((self.board.n_cols - 1) * (self.board.n_rows - 1), 1, 2)
+                print("reprojected_corners size: {}".format(reprojected_corners.shape))
+                print("values : {}".format(reprojected_corners))
+
+                if self.mc.pattern != Patterns.ChArUco:
+                    reprojection_errors = squeezed_img_points.T - reprojected
+                else:
+                    # After reorganizing to row-major, swap x/y for error computation
+                    # (board uses col,row but image uses x,y)
+                    reprojection_errors = squeezed_img_points.T - filtered_reprojected
+
+                reprojection_rms = numpy.sqrt(numpy.sum(numpy.array(
+                    reprojection_errors) ** 2) / numpy.product(reprojection_errors.shape))
+
+                # Print the results
+                print(f"linearity_rms type : {type(linearity_rms)}, reprojection_rms type : {type(reprojection_rms)}")
+                print("Linearity RMS Error: %.3f Pixels      Reprojection RMS Error: %.3f Pixels" % (
+                    linearity_rms if linearity_rms is not None else 0.0, reprojection_rms))
+
+                if linearity_rms is not None and current_timestamp not in [t[0] for t in self.linearity_rms_errors]:
+                    self.linearity_rms_errors.append(
+                        (current_timestamp, linearity_rms))
+                if reprojection_rms is not None and current_timestamp not in [t[0] for t in self.reproj_rms_errors]:
+                    self.reproj_rms_errors.append(
+                        (current_timestamp, reprojection_rms))
+
+                if len(self.linearity_rms_errors) >= 20:
+                    self.enough_data = True
             else:
-                #charuco board are represented as columns x rows, so we need to swap x and y in the reprojection to compute the error correctly
-                swapped_reprojected = filtered_reprojected.copy()
-                swapped_reprojected[[0,1]] = filtered_reprojected[[1,0]]
-                reprojection_errors = image_points.squeeze().T - swapped_reprojected.T
+                linearity_rms = None
+                reprojection_rms = None
+        finally:
+            scrib = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
 
-            reprojection_rms = numpy.sqrt(numpy.sum(numpy.array(
-                reprojection_errors) ** 2) / numpy.product(reprojection_errors.shape))
+            drawable = MonoDrawable()
+            # draw chessboard on image for display
+            if corners is not None:
+                if self.board.pattern == 'chessboard':
+                    cv2.drawChessboardCorners(
+                        scrib, (self.board.n_cols, self.board.n_rows), corners, True)
+                elif self.board.pattern == 'charuco':
+                    cv2.aruco.drawDetectedCornersCharuco(scrib, corners, ids)
+                    if type(reprojected_corners) is numpy.ndarray and reprojected_corners.size > 0:
+                        # reprojected_corners already in (N, 1, 2) format for ChArUco
+                        if self.mc.pattern == Patterns.ChArUco:
+                            # Draw reprojected points as green rectangles
+                            rectangle_size = 2
+                            for i, (x, y) in enumerate(reprojected_corners.squeeze()):
+                                if not numpy.isnan(x) and not numpy.isnan(y):
+                                    cv2.rectangle(scrib, 
+                                                (int(x)-rectangle_size, int(y)-rectangle_size), 
+                                                (int(x)+rectangle_size, int(y)+rectangle_size), 
+                                                (0, 255, 0), 1)
+                                    self.putText(scrib, f"{i}", (int(x)+rectangle_size, int(y)-rectangle_size), (0, 255, 0))
+                        
+            drawable.scrib = scrib
+            drawable.linear_error = linearity_rms
+            drawable.reproj_error = reprojection_rms
 
-            # Print the results
-            print("Linearity RMS Error: %.3f Pixels      Reprojection RMS Error: %.3f Pixels" % (
-                linearity_rms, reprojection_rms))
-
-            if linearity_rms is not None and reprojection_rms is not None and current_timestamp not in [t[0] for t in self.linearity_rms_errors]:
-                self.linearity_rms_errors.append(
-                    (current_timestamp, linearity_rms))
-                self.reproj_rms_errors.append(
-                    (current_timestamp, reprojection_rms))
-
-            if len(self.linearity_rms_errors) >= 20:
-                self.enough_data = True
-        else:
-            print(f'{current_timestamp} : no chessboard')
-            linearity_rms = None
-            reprojection_rms = None
-
-        scrib = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
-
-        drawable = MonoDrawable()
-        # draw chessboard on image for display
-        if corners is not None:
-            if self.board.pattern == 'chessboard':
-                cv2.drawChessboardCorners(
-                    scrib, (self.board.n_cols, self.board.n_rows), corners, True)
-            elif self.board.pattern == 'charuco':
-                cv2.aruco.drawDetectedCornersCharuco(scrib, corners, ids)
-
-        drawable.scrib = scrib
-        drawable.linear_error = linearity_rms
-        drawable.reproj_error = reprojection_rms
-
-        self.redraw_monocular(drawable)
+            self.redraw_monocular(drawable)
 
     @classmethod
     def putText(cls, img, text, org, color=(0, 0, 0)):

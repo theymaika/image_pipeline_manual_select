@@ -40,7 +40,7 @@ def main():
     from optparse import OptionParser
     parser = OptionParser()
     parser.add_option("-p", "--pattern", default="chessboard", help="specify calibration pattern type [default: %default]")
-    parser.add_option("-s", "--size", default="8x6", help="specify chessboard size as nxm [default: %default]")
+    parser.add_option("-s", "--size", default="8x6", help="specify chessboard size (inner corners only) as rows x columns [default: %default]. For ChArUco boards, this is the total size of the board not the number of inner corners. Must be rows x columns.")
     parser.add_option("-q", "--square", default=".108", help="specify chessboard square size in meters [default: %default]")
     parser.add_option("--approximate",
                       type="float", default=0.0,
