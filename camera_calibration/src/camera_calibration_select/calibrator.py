@@ -536,18 +536,22 @@ class Calibrator():
         for i, b in enumerate(boards):
             if self.pattern == Patterns.ChArUco:
                 # ChArUco boards have (n_rows-1) x (n_cols-1) inner corners
-                # Generated in column-major order to match cv::aruco::CharucoBoard
+                # but the total number of points is (n_rows + 1) x (n_cols + 1) with the outer corners included.
+                # Generated in row-major order to match cv::aruco::CharucoBoard
                 num_pts = (b.n_cols - 1) * (b.n_rows - 1)
                 opts_loc = numpy.zeros((num_pts, 1, 3), numpy.float32)
-                # Column-major ordering: iterate columns first, then rows
-                for col in range(b.n_cols - 1):
-                    for row in range(b.n_rows - 1):
-                        idx = col * (b.n_rows - 1) + row
+                for row in range(b.n_rows + 1):
+                    for col in range(b.n_cols + 1):
+                        if row == 0 or row == b.n_rows or col == 0 or col == b.n_cols:
+                            continue
+                        # is normally row * (b.n_cols + 1) + col, but we skip the outer corners so we need to subtract 1 from both row and col to get the correct index in the inner corners array
+                        idx = (row - 1) * (b.n_cols - 1) + (col - 1)
                         opts_loc[idx, 0, 0] = col
                         opts_loc[idx, 0, 1] = row
                         opts_loc[idx, 0, 2] = 0
                 if use_board_size:
                     opts_loc[:, :, :] = opts_loc[:, :, :] * b.dim
+                # TODO: filter out the outer corner vertices to get only the marker frame positions which are the inner vertices
             else:
                 num_pts = b.n_cols * b.n_rows
                 opts_loc = numpy.zeros((num_pts, 1, 3), numpy.float32)
@@ -555,7 +559,7 @@ class Calibrator():
                     opts_loc[j, 0, 0] = (j // b.n_cols)
                     if self.pattern == Patterns.ACircles:
                         opts_loc[j, 0, 1] = 2 * \
-                            (j % b.n_cols) + (opts_loc[j, 0, 0] % 2)    
+                            (j % b.n_cols) + (opts_loc[j, 0, 0] % 2)
                     else:
                         opts_loc[j, 0, 1] = (j % b.n_cols)
                     opts_loc[j, 0, 2] = 0

@@ -265,6 +265,8 @@ class CameraCheckerNode(Node):
         self.current_image_height = gray.shape[0]
         current_timestamp = image.header.stamp
         reprojected_corners = []
+        linearity_rms = None
+        reprojection_rms = None
         try:
             if corners is not None:
                 # Comuptes the RMS error between a detected point on a row and the line defined by the leftmost and the rightmost detected points on the same row and  averages the RMS error across all rows.  This is a measure of how well the detected corners fit a chessboard pattern.
@@ -274,6 +276,7 @@ class CameraCheckerNode(Node):
                 image_points = corners
                 object_points = self.mc.mk_object_points(
                     [self.board], use_board_size=True)[0]
+                
                 dist_coeffs = numpy.zeros((4, 1))
                 camera_matrix = numpy.array([[camera.p[0], camera.p[1], camera.p[2]],
                                             [camera.p[4], camera.p[5], camera.p[6]],
@@ -297,38 +300,29 @@ class CameraCheckerNode(Node):
                 object_points_world = numpy.asmatrix(
                     rot3x3) * numpy.asmatrix(object_points.squeeze().T) + numpy.asmatrix(trans)
                 reprojected_h = camera_matrix * object_points_world
-                print("reprojected_h: {}".format(reprojected_h))
+                
                 if(any([reprojected_h[2, i] == 0. for i in range(reprojected_h.shape[1])])):
                     raise ZeroDivisionError("At least one point has a z value of 0 after projection, cannot divide by zero to get pixel coordinates.")
                 reprojected = (reprojected_h[0:2, :] / reprojected_h[2, :])
-                print("reprojected size: {}".format(reprojected.shape))
                 
                 # filter out points in the reprojection that are not part of the detected corners
                 squeezed_img_points = image_points.squeeze()
 
-                # Get reprojected points corresponding to detected IDs
-                filtered_reprojected = numpy.array([reprojected[:,i] for i in ids.flatten()])
+                # Get reprojected points corresponding to detected IDs and format it for displaying
+                filtered_reprojected = numpy.array([reprojected[:,i] for i in ids.flatten()]).swapaxes(1,2)
                 
-                print("reprojected pts {}: {}".format(reprojected.shape, reprojected))
-                print("filtered_reprojected {}: {}".format(filtered_reprojected.shape, filtered_reprojected))
-                print("squeezed_img_points: {}".format(squeezed_img_points))
                 # Prepare corners for drawing (N, 1, 2) format
-                reprojected_corners = numpy.asarray(reprojected).T.reshape((self.board.n_cols - 1) * (self.board.n_rows - 1), 1, 2)
-                print("reprojected_corners size: {}".format(reprojected_corners.shape))
-                print("values : {}".format(reprojected_corners))
+                reprojected_corners = numpy.asarray(reprojected).T.reshape(-1, 1, 2)
 
                 if self.mc.pattern != Patterns.ChArUco:
                     reprojection_errors = squeezed_img_points.T - reprojected
                 else:
-                    # After reorganizing to row-major, swap x/y for error computation
-                    # (board uses col,row but image uses x,y)
-                    reprojection_errors = squeezed_img_points.T - filtered_reprojected
+                    reprojection_errors = squeezed_img_points - filtered_reprojected.squeeze()
 
                 reprojection_rms = numpy.sqrt(numpy.sum(numpy.array(
                     reprojection_errors) ** 2) / numpy.product(reprojection_errors.shape))
 
                 # Print the results
-                print(f"linearity_rms type : {type(linearity_rms)}, reprojection_rms type : {type(reprojection_rms)}")
                 print("Linearity RMS Error: %.3f Pixels      Reprojection RMS Error: %.3f Pixels" % (
                     linearity_rms if linearity_rms is not None else 0.0, reprojection_rms))
 
@@ -344,6 +338,8 @@ class CameraCheckerNode(Node):
             else:
                 linearity_rms = None
                 reprojection_rms = None
+        except ZeroDivisionError as e:
+            pass
         finally:
             scrib = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
 
