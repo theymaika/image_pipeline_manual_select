@@ -867,34 +867,34 @@ class MonoCalibrator(Calibrator):
 
             reproj_err, self.intrinsics, self.distortion, rvecs, tvecs = cv2.aruco.calibrateCameraCharuco(
                 ipts, ids, boards[0].charuco_board, self.size, intrinsics_in, None)
-
-        elif self.camera_model == CAMERA_MODEL.PINHOLE:
-            print("mono pinhole calibration...")
-            reproj_err, self.intrinsics, dist_coeffs, rvecs, tvecs = cv2.calibrateCamera(
-                opts, ipts,
-                self.size,
-                intrinsics_in,
-                None,
-                flags=self.calib_flags)
-            # OpenCV returns more than 8 coefficients (the additional ones all zeros) when CALIB_RATIONAL_MODEL is set.
-            # The extra ones include e.g. thin prism coefficients, which we are not interested in.
-            if self.calib_flags & cv2.CALIB_RATIONAL_MODEL:
-                # rational polynomial
-                self.distortion = dist_coeffs.flat[:8].reshape(-1, 1)
+        else:
+            if self.camera_model == CAMERA_MODEL.PINHOLE:
+                print("mono pinhole calibration...")
+                reproj_err, self.intrinsics, dist_coeffs, rvecs, tvecs = cv2.calibrateCamera(
+                    opts, ipts,
+                    self.size,
+                    intrinsics_in,
+                    None,
+                    flags=self.calib_flags)
+                # OpenCV returns more than 8 coefficients (the additional ones all zeros) when CALIB_RATIONAL_MODEL is set.
+                # The extra ones include e.g. thin prism coefficients, which we are not interested in.
+                if self.calib_flags & cv2.CALIB_RATIONAL_MODEL:
+                    # rational polynomial
+                    self.distortion = dist_coeffs.flat[:8].reshape(-1, 1)
+                else:
+                    # plumb bob
+                    self.distortion = dist_coeffs.flat[:5].reshape(-1, 1)
             else:
-                # plumb bob
-                self.distortion = dist_coeffs.flat[:5].reshape(-1, 1)
-        elif self.camera_model == CAMERA_MODEL.FISHEYE:
-            print("mono fisheye calibration...")
-            # WARNING: cv2.fisheye.calibrate wants float64 points
-            ipts64 = numpy.asarray(ipts, dtype=numpy.float64)
-            ipts = ipts64
-            opts64 = numpy.asarray(opts, dtype=numpy.float64)
-            opts = opts64
-            reproj_err, self.intrinsics, self.distortion, rvecs, tvecs = cv2.fisheye.calibrate(
-                opts, ipts, self.size,
-                intrinsics_in, None, flags=self.fisheye_calib_flags)
-
+                print("mono fisheye calibration...")
+                # WARNING: cv2.fisheye.calibrate wants float64 points
+                ipts64 = numpy.asarray(ipts, dtype=numpy.float64)
+                ipts = ipts64
+                opts64 = numpy.asarray(opts, dtype=numpy.float64)
+                opts = opts64
+                reproj_err, self.intrinsics, self.distortion, rvecs, tvecs = cv2.fisheye.calibrate(
+                    opts, ipts, self.size,
+                    intrinsics_in, None, flags=self.fisheye_calib_flags)
+            
         # R is identity matrix for monocular calibration
         self.R = numpy.eye(3, dtype=numpy.float64)
         self.P = numpy.zeros((3, 4), dtype=numpy.float64)
@@ -945,9 +945,12 @@ class MonoCalibrator(Calibrator):
         Apply the post-calibration undistortion to the source points
         """
         if self.camera_model == CAMERA_MODEL.PINHOLE:
-            return cv2.undistortPoints(src, self.intrinsics, self.distortion, R=self.R, P=self.P)
+            print("undistort_points for pinholes")
         elif self.camera_model == CAMERA_MODEL.FISHEYE:
+            print("undistort_points for fisheyes")
             return cv2.fisheye.undistortPoints(src, self.intrinsics, self.distortion, R=self.R, P=self.P)
+        else:
+            raise RuntimeError("Camera type undefined")
 
     def as_message(self):
         """ Return the camera calibration as a CameraInfo message """

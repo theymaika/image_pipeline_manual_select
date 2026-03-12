@@ -40,12 +40,11 @@ import sensor_msgs.msg
 import sensor_msgs.srv
 import threading
 import time
-from camera_calibration_select.calibrator import MonoCalibrator, StereoCalibrator, Patterns
+from camera_calibration_select.calibrator import MonoCalibrator, StereoCalibrator, Patterns, CAMERA_MODEL
 try:
     from queue import Queue
 except ImportError:
     from Queue import Queue
-from camera_calibration.calibrator import CAMERA_MODEL
 from rclpy.qos import qos_profile_system_default
 from rclpy.qos import QoSProfile
 
@@ -333,10 +332,6 @@ class OpenCVCalibrationNode(CalibrationNode):
             print("Cannot change camera model until the first image has been received")
             return
 
-        self.c.set_cammodel(
-            CAMERA_MODEL.PINHOLE if model_select_val < 0.5 else CAMERA_MODEL.FISHEYE)
-
-    def on_model_change(self, model_select_val):
         self.c.set_cammodel(
             CAMERA_MODEL.PINHOLE if model_select_val < 0.5 else CAMERA_MODEL.FISHEYE)
 
@@ -665,20 +660,19 @@ class OpenCVCalibrationNode(CalibrationNode):
         """Enhanced mouse handler with image selection option"""
         if event == cv2.EVENT_LBUTTONDOWN and self.displaywidth < x:
             # Option to start image selection before calibration
-            if self.c.goodenough and select_start <= y < calibrate_start:
-                print("**** Starting Image Selection ****")
-                accepted = self.select_images_interactive()
-                if accepted > 0:
-                    # Recompute progress after filtering
-                    params = self.c.compute_goodenough()
-                    print(f"Progress after filtering: {params}")
-                    # Re-render with updated parameters
-                    self.buttons_with_selection(self._last_display)
-                    self.queue_display.put(self._last_display)
-                return
-
             if self.c.goodenough:
-                if calibrate_start <= y < save_start:
+                if select_start <= y < calibrate_start:
+                    print("**** Starting Image Selection ****")
+                    accepted = self.select_images_interactive()
+                    if accepted > 0:
+                        # Recompute progress after filtering
+                        params = self.c.compute_goodenough()
+                        print(f"Progress after filtering: {params}")
+                        # Re-render with updated parameters
+                        self.buttons_with_selection(self._last_display)
+                        self.queue_display.put(self._last_display)
+
+                elif calibrate_start <= y < save_start:
                     print("**** Calibrating ****")
                     self.c.do_calibration()
                     self.buttons_with_selection(self._last_display)
